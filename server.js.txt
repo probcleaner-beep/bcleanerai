@@ -1,0 +1,139 @@
+// server.js
+// Node.js + Express HTTPS server for simple vehicle-type classification by text
+// Usage: node server.js
+// Requires: node >= 14, npm install express body-parser
+
+
+const express = require('express');
+const bodyParser = require('body-parser');
+
+const app = express();
+app.use(bodyParser.json());
+
+// --- Simple keyword-based classifier ---
+function normalizeText(s) {
+  return (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function classifyVehicle(text) {
+  const t = normalizeText(text);
+
+  const scores = {
+    suv: 0,
+    berline: 0,
+    break: 0,
+    coupe: 0,
+    cabriolet: 0,
+    monospace: 0,
+    utilitaire: 0,
+    inconnue: 0
+  };
+
+  // Keywords - adapte selon le style de descriptions client
+  const kw = {
+    suv: ['suv', '4x4', 'tout-terrain', 'haute garde', 'haute garde au sol', 'barres de toit', 'haut'],
+    berline: ['berline', 'sedan', '3 volumes', 'confort', 'compacte', 'compact', 'luxe berline'],
+    break: ['break', 'estate', 'familiale', 'long coffre', 'coffre'],
+    coupe: ['coupé', 'coupe', 'sport', '2 portes', '2 portes'],
+    cabriolet: ['cabriolet', 'convertible', 'decapotable', 'toit ouvrant', 'toit retractable'],
+    monospace: ['monospace', 'minivan', '7 places', '8 places', 'places', 'familial'],
+    utilitaire: ['utilitaire', 'fourgon', 'camionnette', 'van', 'fourgonette', 'benne', 'plancher']
+  };
+
+  // increase score if keyword found
+  for (const cat of Object.keys(kw)) {
+    for (const word of kw[cat]) {
+      if (t.includes(word)) scores[cat] += 1;
+    }
+  }
+
+  // heuristics: length and numbers
+  if (/\b(5 places|5 sièges|5 personnes|7 places|7 sièges|8 places)\b/.test(t)) {
+    if (t.includes('7') || t.includes('8') || t.includes('7 places') || t.includes('8 places')) scores['monospace'] += 2;
+    if (t.includes('5 places')) scores['berline'] += 1;
+  }
+
+  // fallback small heuristics
+  if (t.includes('familial') || t.includes('famille')) scores['break'] += 1;
+
+  // choose best
+  let best = 'inconnue';
+  let bestScore = 0;
+  for (const [k, v] of Object.entries(scores)) {
+    if (v > bestScore) {
+      bestScore = v;
+      best = k;
+    }
+  }
+
+  // compute simple confidence: normalized score
+  const total = Object.values(scores).reduce((a, b) => a + b, 0);
+  const confidence = total === 0 ? 0.0 : +(bestScore / total).toFixed(2);
+
+  // friendly names
+  const names = {
+    suv: 'SUV / 4x4',
+    berline: 'Berline',
+    break: 'Break / Familiale',
+    coupe: 'Coupé',
+    cabriolet: 'Cabriolet',
+    monospace: 'Monospace / Minivan',
+    utilitaire: 'Utilitaire / Fourgon',
+    inconnue: 'Non déterminé'
+  };
+
+  // explanation: show matched categories and score
+  return {
+    categoryKey: best,
+    category: names[best] || 'Non déterminé',
+    confidence,
+    details: { scores }
+  };
+}
+
+// --- API endpoint ---
+app.post('/api/classify', (req, res) => {
+  const { description } = req.body || {};
+  if (!description || typeof description !== 'string') {
+    return res.status(400).json({ error: 'Paramètre manquant : description (string).' });
+  }
+
+  const result = classifyVehicle(description);
+
+  // If confidence is 0, add suggestion
+  if (result.confidence === 0) {
+    result.note = "Description trop courte ou ambigüe. Demandez une photo ou précisez : nombre de portes, hauteur, coffre, 4x4, nombre de places, utilitaire, etc.";
+  }
+
+  res.json({ ok: true, input: description, result });
+});
+
+// --- Simple health check ---
+app.get('/api/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// --- HTTPS server setup ---
+// For tests, utilisez un certificat auto-signé (voir instructions).
+const PORT = process.env.PORT || 4430;
+const CERT_PATH = process.env.CERT_PATH || './cert.pem';
+const KEY_PATH = process.env.KEY_PATH || './key.pem';
+
+// Check files existence
+if (!fs.existsSync(CERT_PATH) || !fs.existsSync(KEY_PATH)) {
+  console.error('Certificat ou clé introuvable. Placez key.pem et cert.pem dans le dossier ou définissez CERT_PATH et KEY_PATH.');
+  console.error('Pour un test local, créez-les avec la commande fournie dans la doc.');
+  process.exit(1);
+}
+
+const options = {
+  cert: fs.readFileSync(CERT_PATH),
+  key: fs.readFileSync(KEY_PATH)
+};
+
+const PORT = process.env.PORT || 3000;
+
+// Render fournit automatiquement un certificat HTTPS.
+// On utilise simplement HTTP ici, Render gère le HTTPS pour nous.
+app.listen(PORT, () => {
+  console.log(`🚀 Serveur en ligne sur le port ${PORT}`);
+});
+
